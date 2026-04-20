@@ -80,7 +80,7 @@
 
     button {
       background: linear-gradient(135deg, #f97316, #fbbf24);
-      border: none;
+      border: 1px solid transparent;
       border-radius: 8px;
       color: #030712;
       font-size: 12px;
@@ -101,6 +101,7 @@
     button:active {
       opacity: 0.75;
     }
+
   </style>
 </head>
 <body>
@@ -137,7 +138,7 @@
       if (!isFinite(solarMasses) || solarMasses <= 0) return;
       starMass = solarMasses * M_BASE; // 1 M☉ = M_BASE internal units
       time     = 0;
-      planets  = createPlanets();
+      planets  = createPlanets().filter(p => Math.hypot(p.x, p.y) > computeStarR());
     }
 
     launchBtn.addEventListener('click', launch);
@@ -162,13 +163,11 @@
           color: def.color,
           rgb:   def.rgb,
           vr:    def.vr,
-          trail: [],
         };
       });
     }
 
-    const DT        = 0.1;
-    const TRAIL_MAX = 380;
+    const DT = 0.1;
     let   time      = 0;
     let   planets   = createPlanets();
 
@@ -180,7 +179,13 @@
       a:  Math.random() * 0.55 + 0.2,
     }));
 
-    // Velocity Verlet integrator for stable, energy-conserving orbits
+    function computeStarR() {
+      const massRatio  = starMass / M_BASE;
+      const massFactor = massRatio < 1 ? massRatio ** 0.8 : massRatio ** 0.57;
+      const pulse      = 1 + 0.04 * Math.sin(time * 1.8);
+      return (18 + 7 * massFactor) * pulse;
+    }
+
     function computeAcc(x, y) {
       const dx = -x, dy = -y;
       const r2 = dx * dx + dy * dy;
@@ -189,24 +194,44 @@
       return { ax: f * dx / r, ay: f * dy / r };
     }
 
-    function stepVerlet(p) {
-      const { ax, ay } = computeAcc(p.x, p.y);
-      const nx = p.x + p.vx * DT + 0.5 * ax * DT * DT;
-      const ny = p.y + p.vy * DT + 0.5 * ay * DT * DT;
-      const { ax: ax2, ay: ay2 } = computeAcc(nx, ny);
-      p.vx += 0.5 * (ax + ax2) * DT;
-      p.vy += 0.5 * (ay + ay2) * DT;
-      p.x   = nx;
-      p.y   = ny;
+    // Returns the full state derivative [dx, dy, dvx, dvy] at a given state.
+    function deriv(x, y, vx, vy) {
+      const { ax, ay } = computeAcc(x, y);
+      return { dx: vx, dy: vy, dvx: ax, dvy: ay };
+    }
+
+    // RK4 integrator — fourth-order accuracy handles high-mass GR cases stably.
+    function stepRK4(p) {
+      const k1 = deriv(p.x, p.y, p.vx, p.vy);
+
+      const k2 = deriv(
+        p.x  + 0.5 * DT * k1.dx,  p.y  + 0.5 * DT * k1.dy,
+        p.vx + 0.5 * DT * k1.dvx, p.vy + 0.5 * DT * k1.dvy,
+      );
+
+      const k3 = deriv(
+        p.x  + 0.5 * DT * k2.dx,  p.y  + 0.5 * DT * k2.dy,
+        p.vx + 0.5 * DT * k2.dvx, p.vy + 0.5 * DT * k2.dvy,
+      );
+
+      const k4 = deriv(
+        p.x  + DT * k3.dx,  p.y  + DT * k3.dy,
+        p.vx + DT * k3.dvx, p.vy + DT * k3.dvy,
+      );
+
+      p.x  += DT / 6 * (k1.dx  + 2 * k2.dx  + 2 * k3.dx  + k4.dx);
+      p.y  += DT / 6 * (k1.dy  + 2 * k2.dy  + 2 * k3.dy  + k4.dy);
+      p.vx += DT / 6 * (k1.dvx + 2 * k2.dvx + 2 * k3.dvx + k4.dvx);
+      p.vy += DT / 6 * (k1.dvy + 2 * k2.dvy + 2 * k3.dvy + k4.dvy);
     }
 
     function update() {
       time += 0.018;
       for (const p of planets) {
-        stepVerlet(p);
-        p.trail.push({ x: p.x, y: p.y });
-        if (p.trail.length > TRAIL_MAX) p.trail.shift();
+        stepRK4(p);
       }
+      const starR = computeStarR();
+      planets = planets.filter(p => Math.hypot(p.x, p.y) > starR);
     }
 
     function draw() {
@@ -225,26 +250,9 @@
         ctx.fill();
       }
 
-      // Planet trails
-      for (const p of planets) {
-        const trail = p.trail;
-        if (trail.length < 2) continue;
-        const len = trail.length;
-        for (let i = 1; i < len; i++) {
-          const t = i / len;
-          ctx.beginPath();
-          ctx.moveTo(cx + trail[i - 1].x, cy + trail[i - 1].y);
-          ctx.lineTo(cx + trail[i].x,     cy + trail[i].y);
-          ctx.strokeStyle   = p.color;
-          ctx.globalAlpha   = t * 0.42;
-          ctx.lineWidth     = 0.4 + t * 2.2;
-          ctx.stroke();
-        }
-      }
-      ctx.globalAlpha = 1;
-
       // Star outer diffuse glow — scales slightly with mass and pulses gently
-      const massFactor = (starMass / M_BASE) ** 0.28;
+      const massRatio  = starMass / M_BASE;
+      const massFactor = massRatio < 1 ? massRatio ** 0.8 : massRatio ** 0.57;
       const pulse      = 1 + 0.04 * Math.sin(time * 1.8);
       const glowR      = 95 * massFactor * pulse;
 
